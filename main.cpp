@@ -17,7 +17,7 @@
 #define MEGABYTE 1024 * KILOBYTE
 #define GIGABYTE 1024 * MEGABYTE
 
-#define MIN_STRIDE 16
+#define MIN_STRIDE 32
 #define MAX_STRIDE 512
 
 // Benchmark parameters
@@ -26,9 +26,10 @@
 
 // Precision parameters
 #define PRECISION 1e-3
-#define FAKE_MULTIPLE 1000000
+#define FAKE_MULTIPLE 10000000
 #define REQUIRED_N_CONVERGED_RUNS 3
-#define TOTAL_RUNS_THRESHOLD 50
+#define TOTAL_RUNS_THRESHOLD 30
+#define NOT_CONVERGED_VALUE std::numeric_limits<double>::infinity()
 
 
 volatile uint8_t* allocate_array() {
@@ -61,8 +62,10 @@ int generate_chain(volatile uint8_t* arr, int stride) {
     auto prev_addr = arr;
     for (int i = 0; i < N_ACCESSES; i++) {
         int random_arr_index = distr(gen) * double_stride;
-        auto first_addr = arr + random_arr_index;
-        auto second_addr = first_addr + stride;
+        auto base_addr = arr + random_arr_index;
+        auto shifted_addr = base_addr + stride;
+        auto first_addr = shifted_addr;
+        auto second_addr = base_addr;
 
         if (* (volatile uint64_t *) first_addr != 0 || random_arr_index + stride >= ARR_LENGTH) {
             continue;
@@ -81,22 +84,21 @@ int generate_chain(volatile uint8_t* arr, int stride) {
 
 
 double benchmark(volatile uint8_t* arr) {
-    uint64_t acc = 0;
-    int chain_length = 0;
+    volatile uint64_t * prev_value = nullptr;
     auto start = std::chrono::high_resolution_clock::now();
     // >>> begin benchmark
     auto value = (volatile uint64_t *) arr;
     while (value != nullptr) {
-        chain_length++;
-        acc += (uint64_t) value;
+        prev_value = value;
         value = (volatile uint64_t *) *value;
     }
     // <<< end benchmark
     auto end = std::chrono::high_resolution_clock::now();
     const std::chrono::duration<double> diff = end - start;
-    std::cerr << "benchmark chain_length=" << chain_length << ", acc=" << acc  << std::endl;
+    std::cerr << "benchmark acc=" << prev_value << std::endl;
     return diff.count();
 }
+
 
 void flush_caches(volatile uint8_t* dummy_arr) {
     for (uint64_t i = 0; i < ARR_LENGTH; i++) {
@@ -112,18 +114,6 @@ double run_benchmark_once(volatile uint8_t* arr, volatile uint8_t* dummy_arr, in
     return benchmark(arr) * FAKE_MULTIPLE / chain_length;
 }
 
-// stride=8
-// stride=16
-// stride=32
-// ...
-// stride=128   performance degrades sharply
-
-
-// 1. chose a randomly, a should be aligned by 2*stride
-// 2. read from *a --> Cache MISS
-// 3. read from *(a + stride) --> Cache HIT if stride < cache line size, else Cache MISS
-
-// Пусть cache line size = 64, => 0xABC000000, 0xABC000000 + 0x2 belong to one cache line
 
 double run_benchmark_until_converges(volatile uint8_t* arr, volatile uint8_t* dummy_arr, int stride) {
     int n = 0;
@@ -136,7 +126,7 @@ double run_benchmark_until_converges(volatile uint8_t* arr, volatile uint8_t* du
         sum += bench_result;
         auto cur_mean = sum / n;
         auto current_err = abs(cur_mean - mean);
-        std::cerr << "Current benchmark results = " << cur_mean << ", current error = " << current_err << std::endl;
+        std::cerr << "Run "<< n << ": Current benchmark results = " << cur_mean << ", current error = " << current_err << std::endl;
         if (current_err < PRECISION) {
             n_successes++;
             if (n_successes >= REQUIRED_N_CONVERGED_RUNS) {
@@ -149,7 +139,7 @@ double run_benchmark_until_converges(volatile uint8_t* arr, volatile uint8_t* du
         mean = cur_mean;
     }
     // Did not converge
-    return std::numeric_limits<double>::infinity();
+    return NOT_CONVERGED_VALUE;
 }
 
 
@@ -162,6 +152,10 @@ int main() {
     for (int stride = MIN_STRIDE; stride <= MAX_STRIDE; stride *= 2) {
         auto result = run_benchmark_until_converges(arr, dummy_arr, stride);
         std::cout << stride << "," << result << std::endl;
+        if (result == NOT_CONVERGED_VALUE) {
+            std::cout << "Cache line size = " << stride << std::endl;
+            std::exit(0);
+        }
     }
 
     return 0;

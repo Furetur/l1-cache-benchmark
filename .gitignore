@@ -2,3 +2,5 @@
 main
 venv
 .DS_Store
+main.dSYM
+results_*.csv
