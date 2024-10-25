@@ -28,7 +28,7 @@
 #define MAX_ASSOCIATIVITY 16
 
 // Benchmark parameters
-#define ARR_LENGTH (uint64_t)4 * GIGABYTE
+#define ARR_LENGTH (uint64_t)16 * GIGABYTE
 #define N_ACCESSES 10000000
 
 // Precision parameters
@@ -36,8 +36,13 @@
 #define REQUIRED_N_CONVERGED_RUNS 5
 #define TOTAL_RUNS_THRESHOLD 200
 
-struct BenchmarkResult {
+struct BenchmarkParameters {
   int stride;
+  uint64_t arr_size;
+};
+
+struct BenchmarkResult {
+  BenchmarkParameters parameters;
   double result;
   double increase;
 };
@@ -58,13 +63,9 @@ volatile uint8_t *allocate_array() {
   return (uint8_t *)arr;
 }
 
-// void clear_array(volatile uint8_t *arr) { std::fill_n(arr, ARR_LENGTH, 0); }
-
-int generate_chain(volatile uint8_t *arr, int stride) {
-  // clear_array(arr);
-
+int generate_chain(volatile uint8_t *arr, int stride, uint64_t arr_size) {
   volatile uint64_t *ptr_arr = (volatile uint64_t *)arr;
-  auto ptr_arr_size = ARR_LENGTH / sizeof(uint64_t);
+  auto ptr_arr_size = arr_size / sizeof(uint64_t);
   stride = stride / sizeof(uint64_t);
 
   int prev_index = 0;
@@ -120,52 +121,90 @@ double run_benchmark_until_converges(volatile uint8_t *arr) {
   std::exit(1);
 }
 
-std::vector<BenchmarkResult> run_benchmarks(volatile uint8_t *arr,
-                                            int min_stride, int max_stride) {
+std::vector<BenchmarkResult>
+run_benchmarks(volatile uint8_t *arr,
+               std::vector<BenchmarkParameters> const &parameters_sequence) {
   std::vector<BenchmarkResult> results;
   double prev_result = 1.0;
-  for (int stride = min_stride; stride <= max_stride; stride *= 2) {
+  for (BenchmarkParameters param : parameters_sequence) {
     BenchmarkResult benchmark_result;
-    std::cerr << "\nStride = " << stride << std::endl;
-    generate_chain(arr, stride);
+    std::cerr << "\nStride = " << param.stride
+              << ", array size = " << param.arr_size << std::endl;
+    generate_chain(arr, param.stride, param.arr_size);
     double current_result = run_benchmark_until_converges(arr);
-    benchmark_result.stride = stride;
+    benchmark_result.parameters = param;
     benchmark_result.result = current_result;
     benchmark_result.increase =
         ((double)current_result) / ((double)prev_result);
     results.push_back(benchmark_result);
 
-    std::cout << stride << ",\t" << current_result << ",\t"
-              << benchmark_result.increase << std::endl;
+    std::cout << param.stride << ",\t" << param.arr_size << ",\t"
+              << current_result << ",\t" << benchmark_result.increase
+              << std::endl;
     prev_result = current_result;
   }
 
   return results;
 }
 
+std::vector<BenchmarkParameters>
+get_strides_parameters_sequence(int min_stride, int max_stride,
+                                uint64_t fixed_arr_size) {
+  std::vector<BenchmarkParameters> parameters_sequence;
+  for (int stride = min_stride; stride <= max_stride; stride *= 2) {
+    BenchmarkParameters params;
+    params.stride = stride;
+    params.arr_size = fixed_arr_size;
+    parameters_sequence.push_back(params);
+  }
+  return parameters_sequence;
+}
+
+std::vector<BenchmarkParameters>
+get_arr_sizes_parameters_sequence(uint64_t min_arr_size, uint64_t max_arr_size,
+                                  uint64_t step, int fixed_stride) {
+  std::vector<BenchmarkParameters> parameters_sequence;
+  for (int arr_size = min_arr_size; arr_size <= max_arr_size;
+       arr_size += step) {
+    BenchmarkParameters params;
+    params.stride = fixed_stride;
+    params.arr_size = arr_size;
+    parameters_sequence.push_back(params);
+  }
+  return parameters_sequence;
+}
+
 int find_cache_line(volatile uint8_t *arr) {
-  auto results = run_benchmarks(arr, MIN_CACHELINE_SIZE, MAX_CACHELINE_SIZE);
+  auto params = get_strides_parameters_sequence(MIN_CACHELINE_SIZE,
+                                                MAX_CACHELINE_SIZE, ARR_LENGTH);
+  auto results = run_benchmarks(arr, params);
   auto result_with_max_increase = std::max_element(
       results.begin() + 1, results.end(), benchmark_result_increase_comparator);
-  return result_with_max_increase->stride;
+  return result_with_max_increase->parameters.stride;
 }
 
 int find_n_sets(volatile uint8_t *arr, int cache_line_size) {
-  auto results =
-      run_benchmarks(arr, MIN_N_SETS * cache_line_size, MAX_N_SETS * cache_line_size);
+  auto params = get_strides_parameters_sequence(
+      MIN_N_SETS * cache_line_size, MAX_N_SETS * cache_line_size, ARR_LENGTH);
+  auto results = run_benchmarks(arr, params);
   auto result_with_max_increase = std::max_element(
       results.begin() + 1, results.end(), benchmark_result_increase_comparator);
-  return result_with_max_increase->stride / cache_line_size;
+  return result_with_max_increase->parameters.stride / cache_line_size;
 }
 
-int find_associativity(volatile uint8_t *arr, int cache_line_size) {
-  auto results = run_benchmarks(arr, MIN_ASSOCIATIVITY * cache_line_size,
-                                MAX_ASSOCIATIVITY * cache_line_size);
-  auto result_with_min_increase = std::min_element(
+int find_associativity(volatile uint8_t *arr, int cache_line_size, int n_sets) {
+  // Size of cache if it was 1-way associative
+  uint64_t one_way_associative_cache_size = cache_line_size * n_sets;
+  auto params = get_arr_sizes_parameters_sequence(
+      MIN_ASSOCIATIVITY * one_way_associative_cache_size,
+      MAX_ASSOCIATIVITY * one_way_associative_cache_size,
+      one_way_associative_cache_size, cache_line_size);
+  auto results = run_benchmarks(arr, params);
+  auto result_with_max_increase = std::max_element(
       results.begin() + 1, results.end(), benchmark_result_increase_comparator);
-  return result_with_min_increase->stride / cache_line_size;
+  return result_with_max_increase->parameters.arr_size /
+         one_way_associative_cache_size;
 }
-
 
 int main() {
   auto arr = allocate_array();
@@ -174,15 +213,18 @@ int main() {
 
   auto cache_line_size = find_cache_line(arr);
   auto n_sets = find_n_sets(arr, cache_line_size);
-  // auto associativity = find_associativity(arr, cache_line_size);
-  // auto set_size = cache_line_size * associativity;
-  // auto cache_size = n_sets * set_size;
+  auto associativity = find_associativity(arr, cache_line_size, n_sets);
+  auto size_of_each_set = cache_line_size * associativity;
+  auto cache_size = ((uint64_t)size_of_each_set) * n_sets;
 
   std::cerr << std::endl
             << "Cache line size " << cache_line_size << std::endl
-            << "Number of sets " << n_sets << std::endl;
-            // << "Associativity " << associativity << std::endl
-            // << "Size of each set " << set_size << std::endl
-            // << "Cache size " << cache_size << std::endl;
+            << "Number of sets " << n_sets << std::endl
+            << "Associativity " << associativity << std::endl
+            << "Size of each set " << size_of_each_set << std::endl
+            << "Cache size " << cache_size << std::endl;
+  // << "Associativity " << associativity << std::endl
+  // << "Size of each set " << set_size << std::endl
+  // << "Cache size " << cache_size << std::endl;
   return 0;
 }
