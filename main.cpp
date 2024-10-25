@@ -32,7 +32,7 @@
 #define N_ACCESSES 10000000
 
 // Precision parameters
-#define PRECISION 0.1
+#define PRECISION 1
 #define REQUIRED_N_CONVERGED_RUNS 5
 #define TOTAL_RUNS_THRESHOLD 200
 
@@ -139,9 +139,8 @@ run_benchmarks(volatile uint8_t *arr,
         ((double)current_result) / ((double)prev_result);
     results.push_back(benchmark_result);
 
-    std::cout << param.stride << "," << param.arr_size << ","
-              << current_result << "," << benchmark_result.increase
-              << std::endl;
+    std::cout << param.stride << "," << param.arr_size << "," << current_result
+              << "," << benchmark_result.increase << std::endl;
     prev_result = current_result;
   }
 
@@ -199,7 +198,7 @@ int find_associativity(volatile uint8_t *arr, int cache_line_size, int n_sets) {
   auto params = get_arr_sizes_parameters_sequence(
       MIN_ASSOCIATIVITY * one_way_associative_cache_size,
       MAX_ASSOCIATIVITY * one_way_associative_cache_size,
-      one_way_associative_cache_size, cache_line_size);
+      2 * one_way_associative_cache_size, cache_line_size);
   auto results = run_benchmarks(arr, params);
   auto result_with_max_increase = std::max_element(
       results.begin() + 1, results.end(), benchmark_result_increase_comparator);
