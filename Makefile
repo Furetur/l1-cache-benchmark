@@ -9,7 +9,7 @@ $(info Results file: ${RESULTS_FILE_NAME})
 all: ${RESULTS_FILE_NAME}
 
 ${RESULTS_FILE_NAME}: main
-	./main 2> /dev/null > ${RESULTS_FILE_NAME}
+	-./main > ${RESULTS_FILE_NAME}
 	@echo "\n----- RESULTS ${RESULTS_FILE_NAME} ------"
 	@cat ${RESULTS_FILE_NAME}
 
