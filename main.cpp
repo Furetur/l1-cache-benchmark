@@ -60,6 +60,7 @@ volatile uint8_t *allocate_array() {
               << std::endl;
     std::exit(1);
   }
+  std::fill_n((volatile uint8_t *)arr, ARR_LENGTH, (uint8_t)0);
   return (uint8_t *)arr;
 }
 
@@ -138,8 +139,8 @@ run_benchmarks(volatile uint8_t *arr,
         ((double)current_result) / ((double)prev_result);
     results.push_back(benchmark_result);
 
-    std::cout << param.stride << ",\t" << param.arr_size << ",\t"
-              << current_result << ",\t" << benchmark_result.increase
+    std::cout << param.stride << "," << param.arr_size << ","
+              << current_result << "," << benchmark_result.increase
               << std::endl;
     prev_result = current_result;
   }
@@ -209,7 +210,7 @@ int find_associativity(volatile uint8_t *arr, int cache_line_size, int n_sets) {
 int main() {
   auto arr = allocate_array();
 
-  std::cout << "stride,\tresult,\tincrease" << std::endl;
+  std::cout << "stride,arr_size,result,increase" << std::endl;
 
   auto cache_line_size = find_cache_line(arr);
   auto n_sets = find_n_sets(arr, cache_line_size);
