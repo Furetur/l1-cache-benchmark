@@ -20,15 +20,15 @@
 #define GIGABYTE 1024 * MEGABYTE
 
 // Search parameters
-#define MIN_CACHELINE_SIZE 8
-#define MAX_CACHELINE_SIZE 512
+#define MIN_CACHELINE_SIZE 16
+#define MAX_CACHELINE_SIZE 256
 #define MIN_N_SETS 16
 #define MAX_N_SETS 256
 #define MIN_ASSOCIATIVITY 2
 #define MAX_ASSOCIATIVITY 16
 
 // Benchmark parameters
-#define ARR_LENGTH (uint64_t)16 * GIGABYTE
+#define ARR_LENGTH (uint64_t)4 * GIGABYTE
 #define N_ACCESSES 10000000
 
 // Precision parameters
@@ -46,6 +46,23 @@ struct BenchmarkResult {
   double result;
   double increase;
 };
+
+int find_first_performance_spike(std::vector<BenchmarkResult> const &results) {
+  // Compute mean increase
+  double sum = 0;
+  for (auto it = results.begin() + 1; it != results.end(); ++it) {
+    sum += it->increase;
+  }
+  double mean_increase = sum / (results.size() - 1);
+
+  // Find first stride for which increase is greater than mean
+  for (auto it = results.begin() + 1; it != results.end(); ++it) {
+    if (it->increase > mean_increase) {
+      return it->parameters.stride;
+    }
+  }
+  return -1;
+}
 
 bool benchmark_result_increase_comparator(BenchmarkResult a,
                                           BenchmarkResult b) {
@@ -178,9 +195,15 @@ int find_cache_line(volatile uint8_t *arr) {
   auto params = get_strides_parameters_sequence(MIN_CACHELINE_SIZE,
                                                 MAX_CACHELINE_SIZE, ARR_LENGTH);
   auto results = run_benchmarks(arr, params);
-  auto result_with_max_increase = std::max_element(
-      results.begin() + 1, results.end(), benchmark_result_increase_comparator);
-  return result_with_max_increase->parameters.stride;
+  auto result_stride = find_first_performance_spike(results);
+  if (result_stride != -1) {
+    return result_stride;
+  } else {
+    std::cerr
+        << "Could not detect cache line size: no performance spikes detected!"
+        << std::endl;
+    std::exit(1);
+  }
 }
 
 int find_n_sets(volatile uint8_t *arr, int cache_line_size) {
