@@ -66,22 +66,15 @@ volatile uint8_t *allocate_array() {
 int generate_chain(volatile uint8_t *arr, int stride, uint64_t arr_size) {
   volatile uint64_t *ptr_arr = (volatile uint64_t *)arr;
   auto ptr_arr_size = arr_size / sizeof(uint64_t);
-  auto index_stride = stride / sizeof(uint64_t);
+  stride = stride / sizeof(uint64_t);
 
-  int last_index = ptr_arr_size - 1;
-  int last_divisible_index = (last_index / index_stride) * index_stride;
-  int prev_index = last_divisible_index;
-  for (int index = last_divisible_index - index_stride; index >= 0;
-       index -= index_stride) {
+  int prev_index = 0;
+  for (int index = stride; index < ptr_arr_size; index += stride) {
     ptr_arr[prev_index] = (uint64_t)&ptr_arr[index];
     prev_index = index;
   }
-  if (prev_index != 0) {
-    std::cerr << "Generate chain failed" << std::endl;
-    std::exit(3);
-  }
-  ptr_arr[prev_index] = (uint64_t)&ptr_arr[last_divisible_index];
-  return ptr_arr_size / index_stride;
+  ptr_arr[prev_index] = (uint64_t)&ptr_arr[0];
+  return ptr_arr_size / stride;
 }
 
 long long benchmark(volatile uint8_t *arr) {
