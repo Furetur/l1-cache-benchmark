@@ -14,5 +14,5 @@ ${RESULTS_FILE_NAME}: main
 	@cat ${RESULTS_FILE_NAME}
 
 main: main.cpp
-	clang++ -g -O0 -Wall -std=c++11 main.cpp -o main
+	$(CXX) -g -O0 -Wall -std=c++11 main.cpp -o main
 
