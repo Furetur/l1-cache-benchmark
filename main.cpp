@@ -14,22 +14,31 @@
 #include <utility>
 #include <vector>
 
-// General definitions
+// --- General definitions
 #define KILOBYTE 1024
 #define MEGABYTE 1024 * KILOBYTE
 #define GIGABYTE 1024 * MEGABYTE
 
-// Search parameters
+// --- Search bounds
+// Cache line size
 #define MIN_CACHELINE_SIZE 16
-#define MAX_CACHELINE_SIZE 256
-#define MIN_N_SETS 16
-#define MAX_N_SETS 256
-#define MIN_ASSOCIATIVITY 2
-#define MAX_ASSOCIATIVITY 16
+#define MAX_CACHELINE_SIZE 128
+// Cache size
+#define MIN_CACHESIZE 32 * KILOBYTE
+#define MAX_CACHESIZE 70 * KILOBYTE
+#define CACHESIZE_STEP 2 * KILOBYTE
+// Number of sets
+#define MIN_N_SETS 8
+#define MAX_N_SETS 128
+
+// Statistical thresholds
+#define CACHESIZE_JUMP_THRESHOLD 1e7
+#define N_SETS_JUMP_THRESHOLD (2 * 1e8)
+#define N_SETS_STABILIZATION_EPSILON (1e8)
 
 // Benchmark parameters
 #define ARR_LENGTH (uint64_t)4 * GIGABYTE
-#define N_ACCESSES 10000000
+#define N_ACCESSES 500000000
 
 // Precision parameters
 #define PRECISION 1
@@ -64,16 +73,12 @@ int find_first_performance_spike(std::vector<BenchmarkResult> const &results) {
   return -1;
 }
 
-bool benchmark_result_increase_comparator(BenchmarkResult a,
-                                          BenchmarkResult b) {
-  return a.increase < b.increase;
-}
-
 volatile uint8_t *allocate_array() {
   long page_size = sysconf(_SC_PAGE_SIZE);
   void *arr = aligned_alloc(page_size, ARR_LENGTH);
+  std::cerr << "Allocated array of " << ARR_LENGTH << " bytes" << std::endl;
   if (arr == nullptr) {
-    std::cout << "Failed to allocate array of length " << ARR_LENGTH
+    std::cerr << "Failed to allocate array of length " << ARR_LENGTH
               << std::endl;
     std::exit(1);
   }
@@ -86,8 +91,8 @@ int generate_chain(volatile uint8_t *arr, int stride, uint64_t arr_size) {
   auto ptr_arr_size = arr_size / sizeof(uint64_t);
   stride = stride / sizeof(uint64_t);
 
-  int prev_index = 0;
-  for (int index = stride; index < ptr_arr_size; index += stride) {
+  uint64_t prev_index = 0;
+  for (uint64_t index = stride; index < ptr_arr_size; index += stride) {
     ptr_arr[prev_index] = (uint64_t)&ptr_arr[index];
     prev_index = index;
   }
@@ -177,20 +182,6 @@ get_strides_parameters_sequence(int min_stride, int max_stride,
   return parameters_sequence;
 }
 
-std::vector<BenchmarkParameters>
-get_arr_sizes_parameters_sequence(uint64_t min_arr_size, uint64_t max_arr_size,
-                                  uint64_t step, int fixed_stride) {
-  std::vector<BenchmarkParameters> parameters_sequence;
-  for (int arr_size = min_arr_size; arr_size <= max_arr_size;
-       arr_size += step) {
-    BenchmarkParameters params;
-    params.stride = fixed_stride;
-    params.arr_size = arr_size;
-    parameters_sequence.push_back(params);
-  }
-  return parameters_sequence;
-}
-
 int find_cache_line(volatile uint8_t *arr) {
   auto params = get_strides_parameters_sequence(MIN_CACHELINE_SIZE,
                                                 MAX_CACHELINE_SIZE, ARR_LENGTH);
@@ -206,27 +197,60 @@ int find_cache_line(volatile uint8_t *arr) {
   }
 }
 
-int find_n_sets(volatile uint8_t *arr, int cache_line_size) {
-  auto params = get_strides_parameters_sequence(
-      MIN_N_SETS * cache_line_size, MAX_N_SETS * cache_line_size, ARR_LENGTH);
-  auto results = run_benchmarks(arr, params);
-  auto result_with_max_increase = std::max_element(
-      results.begin() + 1, results.end(), benchmark_result_increase_comparator);
-  return result_with_max_increase->parameters.stride / cache_line_size;
+uint64_t find_cache_size(volatile uint8_t *arr, int cache_line_size) {
+  int stride = 2 * cache_line_size;
+  // 1. Form a sequence
+  std::vector<BenchmarkParameters> parameters_sequence;
+  for (int arr_length = MIN_CACHESIZE; arr_length <= MAX_CACHESIZE;
+       arr_length += CACHESIZE_STEP) {
+    BenchmarkParameters params;
+    params.stride = stride;
+    params.arr_size = arr_length;
+    parameters_sequence.push_back(params);
+  }
+  // 2. Run experiments
+  auto results = run_benchmarks(arr, parameters_sequence);
+  // 3. Analyze results
+  double prev_result = results[0].result;
+  for (size_t i = 1; i < results.size(); i++) {
+    auto diff = results[i].result - prev_result;
+    if (diff >= CACHESIZE_JUMP_THRESHOLD) {
+      return results[i].parameters.arr_size;
+    }
+  }
+  std::cerr << "Could not detect cache size!" << std::endl;
+  std::exit(1);
 }
 
-int find_associativity(volatile uint8_t *arr, int cache_line_size, int n_sets) {
-  // Size of cache if it was 1-way associative
-  uint64_t one_way_associative_cache_size = cache_line_size * n_sets;
-  auto params = get_arr_sizes_parameters_sequence(
-      MIN_ASSOCIATIVITY * one_way_associative_cache_size,
-      MAX_ASSOCIATIVITY * one_way_associative_cache_size,
-      2 * one_way_associative_cache_size, cache_line_size);
-  auto results = run_benchmarks(arr, params);
-  auto result_with_max_increase = std::max_element(
-      results.begin() + 1, results.end(), benchmark_result_increase_comparator);
-  return result_with_max_increase->parameters.arr_size /
-         one_way_associative_cache_size;
+int find_associativity(volatile uint8_t *arr, int cache_line_size,
+                       uint64_t cache_size) {
+  int stride = cache_line_size * MAX_N_SETS;
+  // 1. Form a sequence
+  std::vector<BenchmarkParameters> parameters_sequence;
+  for (uint64_t assumed_associativity = 4; assumed_associativity <= 16;
+       assumed_associativity += 2) {
+    BenchmarkParameters params = {.stride = stride,
+                                  .arr_size = assumed_associativity * stride};
+    parameters_sequence.push_back(params);
+  }
+  // 2. Run experiments
+  auto results = run_benchmarks(arr, parameters_sequence);
+  // 3. Analyze results
+  double prev_result = results[0].result;
+  for (size_t i = 1; i < results.size(); i++) {
+    auto diff = results[i].result - prev_result;
+    if (diff >= 1.5 * 1e8) {
+      uint64_t assumed_associativity = results[i].parameters.arr_size / stride;
+      uint64_t assumed_n_sets =
+          cache_size / (assumed_associativity * cache_line_size);
+      uint64_t rounded_n_sets = 1 << (std::bit_width(assumed_n_sets) - 1);
+      uint64_t rounded_associativity =
+          (cache_size / rounded_n_sets) / cache_line_size;
+      return rounded_associativity;
+    }
+  }
+  std::cerr << "Could not detect associativity!" << std::endl;
+  std::exit(1);
 }
 
 int main() {
@@ -234,20 +258,19 @@ int main() {
 
   std::cout << "stride,arr_size,result,increase" << std::endl;
 
-  auto cache_line_size = find_cache_line(arr);
-  auto n_sets = find_n_sets(arr, cache_line_size);
-  auto associativity = find_associativity(arr, cache_line_size, n_sets);
-  auto size_of_each_set = cache_line_size * associativity;
-  auto cache_size = ((uint64_t)size_of_each_set) * n_sets;
+  // 49152
+  int cache_line_size = find_cache_line(arr);
+  std::cerr << "Result: cache line size is " << cache_line_size << std::endl;
+
+  uint64_t cache_size = find_cache_size(arr, cache_line_size);
+  std::cerr << "Result: cache size is " << cache_size << std::endl;
+
+  int associativity = find_associativity(arr, 64, 49152);
+  std::cerr << "Result: associativity is " << associativity << std::endl;
 
   std::cerr << std::endl
-            << "Cache line size " << cache_line_size << std::endl
-            << "Number of sets " << n_sets << std::endl
-            << "Associativity " << associativity << std::endl
-            << "Size of each set " << size_of_each_set << std::endl
-            << "Cache size " << cache_size << std::endl;
-  // << "Associativity " << associativity << std::endl
-  // << "Size of each set " << set_size << std::endl
-  // << "Cache size " << cache_size << std::endl;
+            << "Cache line size: " << cache_line_size << std::endl
+            << "Cache size:      " << cache_size << std::endl
+            << "Associativity:   " << associativity << std::endl;
   return 0;
 }
